@@ -1,0 +1,428 @@
+/*
+Instru-Marion — Admin Dashboard
+Single-file React component (AdminDashboard.jsx)
+
+Dépendances suggérées :
+  react, react-dom, framer-motion, lucide-react, @radix-ui/react-dialog, tailwindcss
+  (optionnel) shadcn/ui components si tu veux les utiliser.
+
+Instructions pour démarrer :
+1) Crée un projet vite ou create-react-app :
+   npm create vite@latest instru-marion-admin -- --template react
+   cd instru-marion-admin
+2) Installe les dépendances :
+   npm install framer-motion lucide-react @radix-ui/react-dialog
+3) Configure Tailwind (npx tailwindcss init -p) et ajoute les fichiers CSS.
+4) Colle ce composant dans src/AdminDashboard.jsx et importe-le dans src/main.jsx
+   import AdminDashboard from './AdminDashboard';
+   root.render(<AdminDashboard />);
+
+Ce panneau admin inclut :
+- Sidebar animé
+- Pages : Catalogue (CRUD beats), Paiements, Support, Statistiques, Paramètres
+- Formulaire d'ajout d'instrus avec upload audio + image (stockés en localStorage via objectURL)
+- Persist dans localStorage
+- Animations via framer-motion
+
+Note : Pour la production tu dois remplacer les stockages locaux par un backend (API + stockage fichiers)
+*/
+
+import React, { useEffect, useMemo, useState, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Menu, PlusCircle, Trash2, Edit3, Settings, CreditCard, Phone, BarChart2, LogOut, Search, ChevronLeft, ChevronRight } from 'lucide-react';
+
+// Petit utilitaire pour formatter l'€
+const euro = (n) => new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' }).format(n);
+
+// LocalStorage helpers
+const LS_BEATS = 'instru_marion_beats_v1';
+const LS_SETTINGS = 'instru_marion_settings_v1';
+
+function loadBeats() {
+  try {
+    const raw = localStorage.getItem(LS_BEATS);
+    if (!raw) return [];
+    return JSON.parse(raw);
+  } catch (e) {
+    return [];
+  }
+}
+function saveBeats(beats) {
+  localStorage.setItem(LS_BEATS, JSON.stringify(beats));
+}
+function loadSettings() {
+  try { return JSON.parse(localStorage.getItem(LS_SETTINGS) || '{}'); } catch { return {}; }
+}
+function saveSettings(s) { localStorage.setItem(LS_SETTINGS, JSON.stringify(s)); }
+
+// Composants UI simples (tailwind must être configuré dans ton projet)
+const IconButton = ({ children, onClick, title }) => (
+  <button onClick={onClick} title={title} className="p-2 rounded-md hover:bg-white/5 transition">
+    {children}
+  </button>
+);
+
+function Sidebar({ page, setPage, collapsed, setCollapsed }) {
+  const items = [
+    { id: 'catalogue', label: 'Catalogue', icon: <PlusCircle className="w-5 h-5" /> },
+    { id: 'paiements', label: 'Paiements', icon: <CreditCard className="w-5 h-5" /> },
+    { id: 'support', label: 'Support', icon: <Phone className="w-5 h-5" /> },
+    { id: 'stats', label: 'Statistiques', icon: <BarChart2 className="w-5 h-5" /> },
+    { id: 'params', label: 'Paramètres', icon: <Settings className="w-5 h-5" /> },
+  ];
+
+  return (
+    <aside className={`flex flex-col bg-gradient-to-b from-white/5 to-white/3 border-r border-white/5 p-4 ${collapsed ? 'w-20' : 'w-64'}`}>
+      <div className="flex items-center gap-3 mb-6">
+        <div className="rounded-md bg-white/10 p-2">
+          <Menu className="w-6 h-6" />
+        </div>
+        {!collapsed && <div className="font-bold text-lg">Instru-<span className="text-fuchsia-400">Marion</span></div>}
+        <div className="ml-auto">
+          <IconButton onClick={() => setCollapsed(!collapsed)} title="Réduire/Étendre">
+            {collapsed ? <ChevronRight className="w-5 h-5" /> : <ChevronLeft className="w-5 h-5" />}
+          </IconButton>
+        </div>
+      </div>
+
+      <nav className="flex-1">
+        {items.map(it => (
+          <div key={it.id} onClick={() => setPage(it.id)} className={`flex items-center gap-3 p-2 rounded-md cursor-pointer hover:bg-white/5 transition ${page === it.id ? 'bg-white/6' : ''}`}>
+            <div className="w-6 h-6 flex items-center justify-center">{it.icon}</div>
+            {!collapsed && <div className="font-medium">{it.label}</div>}
+          </div>
+        ))}
+      </nav>
+
+      <div className="mt-4">
+        <button className="w-full bg-gradient-to-r from-fuchsia-500 to-pink-500 text-black font-semibold py-2 rounded-2xl">Accéder au site</button>
+        <div className="mt-3 flex items-center justify-between text-xs text-white/60">
+          <div>Admin</div>
+          <button className="flex items-center gap-2 p-1 rounded-md hover:bg-white/5"><LogOut className="w-4 h-4"/> Déconnexion</button>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function Topbar({ title, onSearch, totalBeats }) {
+  const [q, setQ] = useState('');
+  useEffect(() => { const t = setTimeout(() => onSearch(q), 250); return () => clearTimeout(t); }, [q]);
+  return (
+    <div className="flex items-center gap-4 p-4 border-b border-white/6">
+      <div className="font-semibold text-lg">{title}</div>
+      <div className="ml-auto flex items-center gap-3">
+        <div className="hidden md:flex items-center gap-2 bg-white/5 px-3 py-2 rounded-2xl">
+          <Search className="w-4 h-4" />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Recherche rapide" className="bg-transparent outline-none w-48" />
+        </div>
+        <div className="text-sm text-white/60">Beats : <strong className="ml-1">{totalBeats}</strong></div>
+      </div>
+    </div>
+  );
+}
+
+function CataloguePage({ beats, setBeats }) {
+  const [isOpen, setOpen] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [query, setQuery] = useState('');
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return beats;
+    return beats.filter(b => [b.title, b.producer, ...(b.tags || [])].join(' ').toLowerCase().includes(q));
+  }, [beats, query]);
+
+  const openNew = () => { setEditing(null); setOpen(true); };
+  const openEdit = (b) => { setEditing(b); setOpen(true); };
+  const remove = (id) => { if (!confirm('Supprimer cette instru ?')) return; const nb = beats.filter(b => b.id !== id); setBeats(nb); saveBeats(nb); };
+
+  return (
+    <div className="p-4">
+      <div className="flex items-center justify-between mb-4">
+        <div className="font-bold text-xl">Catalogue</div>
+        <div className="flex items-center gap-3">
+          <input placeholder="Filtrer…" value={query} onChange={(e) => setQuery(e.target.value)} className="bg-white/5 px-3 py-2 rounded-2xl outline-none" />
+          <button onClick={openNew} className="bg-fuchsia-500/90 px-4 py-2 rounded-2xl flex items-center gap-2 font-semibold"> <PlusCircle/> Ajouter</button>
+        </div>
+      </div>
+
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {filtered.map(b => (
+          <motion.div layout key={b.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="rounded-2xl border border-white/8 overflow-hidden bg-white/3">
+            <div className="flex">
+              <img src={b.cover} alt="cover" className="h-28 w-28 object-cover" />
+              <div className="p-3 flex-1">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <div className="font-semibold">{b.title}</div>
+                    <div className="text-xs text-white/60">{b.producer} • {b.bpm} BPM • {b.key}</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="font-bold">{euro(b.price)}</div>
+                    <div className="text-xs text-white/60">{b.license || 'Standard'}</div>
+                  </div>
+                </div>
+
+                <div className="mt-3 flex items-center gap-2">
+                  <button onClick={() => openEdit(b)} className="p-2 rounded-md hover:bg-white/5"><Edit3 className="w-4 h-4"/></button>
+                  <button onClick={() => remove(b.id)} className="p-2 rounded-md hover:bg-red-500/20"><Trash2 className="w-4 h-4"/></button>
+                  <audio controls src={b.audio} className="ml-auto w-36" />
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        ))}
+      </div>
+
+      <AnimatePresence>
+        {isOpen && (
+          <Modal onClose={() => setOpen(false)}>
+            <BeatForm initial={editing} onClose={() => setOpen(false)} onSave={(beat) => {
+              let nb;
+              if (editing) {
+                nb = beats.map(b => b.id === beat.id ? beat : b);
+              } else {
+                nb = [beat, ...beats];
+              }
+              setBeats(nb);
+              saveBeats(nb);
+              setOpen(false);
+            }} />
+          </Modal>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function Modal({ children, onClose }) {
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 grid place-items-center">
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <motion.div initial={{ y: 20, scale: 0.98 }} animate={{ y: 0, scale: 1 }} exit={{ y: 10, scale: 0.98 }} className="relative z-10 w-full max-w-2xl bg-white/5 border border-white/10 rounded-2xl p-6">
+        {children}
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function BeatForm({ initial, onSave, onClose }) {
+  const [title, setTitle] = useState(initial?.title || '');
+  const [producer, setProducer] = useState(initial?.producer || 'Marion');
+  const [bpm, setBpm] = useState(initial?.bpm || 120);
+  const [key, setKey] = useState(initial?.key || 'Am');
+  const [price, setPrice] = useState(initial?.price || 29);
+  const [tags, setTags] = useState((initial?.tags || []).join(', '));
+  const [cover, setCover] = useState(initial?.cover || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?q=80&w=1200&auto=format&fit=crop');
+  const [audio, setAudio] = useState(initial?.audio || '');
+
+  const coverRef = useRef();
+  const audioRef = useRef();
+
+  const handleCover = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    setCover(url);
+  };
+  const handleAudio = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    setAudio(url);
+  };
+
+  const submit = (e) => {
+    e.preventDefault();
+    const beat = {
+      id: initial?.id || 'b_' + Date.now(),
+      title, producer, bpm: Number(bpm), key, price: Number(price), tags: tags.split(',').map(t => t.trim()).filter(Boolean), cover, audio, license: 'Standard'
+    };
+    onSave(beat);
+  };
+
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      <div className="flex items-center gap-4">
+        <div className="w-24 h-24 rounded-lg overflow-hidden bg-black/40">
+          <img src={cover} alt="cover" className="w-full h-full object-cover" />
+        </div>
+        <div className="flex-1 grid grid-cols-2 gap-2">
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Titre" className="p-2 bg-white/5 rounded-md outline-none" />
+          <input value={producer} onChange={(e) => setProducer(e.target.value)} placeholder="Producteur" className="p-2 bg-white/5 rounded-md outline-none" />
+          <input value={bpm} onChange={(e) => setBpm(e.target.value)} placeholder="BPM" type="number" className="p-2 bg-white/5 rounded-md outline-none" />
+          <input value={key} onChange={(e) => setKey(e.target.value)} placeholder="Tonalité" className="p-2 bg-white/5 rounded-md outline-none" />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        <input value={price} onChange={(e) => setPrice(e.target.value)} type="number" placeholder="Prix €" className="p-2 bg-white/5 rounded-md outline-none" />
+        <input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="Tags (comma)" className="p-2 bg-white/5 rounded-md outline-none" />
+        <select value={/*license*/'Standard'} onChange={() => {}} className="p-2 bg-white/5 rounded-md outline-none">
+          <option>Standard</option>
+          <option>Premium</option>
+        </select>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <label className="p-2 bg-white/5 rounded-md cursor-pointer text-center">Choisir cover<input ref={coverRef} onChange={handleCover} type="file" accept="image/*" className="hidden"/></label>
+        <label className="p-2 bg-white/5 rounded-md cursor-pointer text-center">Choisir audio<input ref={audioRef} onChange={handleAudio} type="file" accept="audio/*" className="hidden"/></label>
+      </div>
+
+      <div className="flex items-center gap-3 justify-end">
+        <button type="button" onClick={onClose} className="px-4 py-2 rounded-md">Annuler</button>
+        <button type="submit" className="px-4 py-2 rounded-2xl bg-fuchsia-500 font-semibold">Enregistrer</button>
+      </div>
+    </form>
+  );
+}
+
+function PaiementsPage({ settings, setSettings }) {
+  const [stripeKey, setStripeKey] = useState(settings.stripeKey || '');
+  const [paypal, setPaypal] = useState(settings.paypal || '');
+  const [enabled, setEnabled] = useState(Boolean(settings.paymentsEnabled));
+
+  const save = () => {
+    const s = { ...settings, stripeKey, paypal, paymentsEnabled: enabled };
+    setSettings(s); saveSettings(s); alert('Paramètres paiements sauvegardés (local)');
+  };
+
+  return (
+    <div className="p-4">
+      <div className="font-bold text-xl mb-4">Paiements</div>
+      <div className="grid gap-3 max-w-xl">
+        <label className="text-sm">Clé publique Stripe (test)</label>
+        <input value={stripeKey} onChange={(e) => setStripeKey(e.target.value)} className="p-2 bg-white/5 rounded-md outline-none" />
+
+        <label className="text-sm">Compte PayPal (email)</label>
+        <input value={paypal} onChange={(e) => setPaypal(e.target.value)} className="p-2 bg-white/5 rounded-md outline-none" />
+
+        <label className="flex items-center gap-2"><input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} /> Activer paiements</label>
+
+        <div className="flex gap-3 mt-3">
+          <button onClick={save} className="px-4 py-2 bg-fuchsia-500 rounded-2xl">Sauvegarder</button>
+          <button onClick={() => { setStripeKey(''); setPaypal(''); setEnabled(false); setSettings({}); saveSettings({}); }} className="px-4 py-2 rounded-md">Réinitialiser</button>
+        </div>
+
+        <div className="text-xs text-white/60">Remarque : pour rendre les paiements effectifs, branche un serveur et les webhooks (Stripe/PayPal).</div>
+      </div>
+    </div>
+  );
+}
+
+function SupportPage({ settings, setSettings }) {
+  const [phone, setPhone] = useState(settings.supportPhone || '');
+  const [email, setEmail] = useState(settings.supportEmail || '');
+  const [whatsapp, setWhatsapp] = useState(settings.supportWhatsapp || '');
+
+  const save = () => {
+    const s = { ...settings, supportPhone: phone, supportEmail: email, supportWhatsapp: whatsapp };
+    setSettings(s); saveSettings(s); alert('Support saved (local)');
+  };
+
+  return (
+    <div className="p-4 max-w-lg">
+      <div className="font-bold text-xl mb-4">Support</div>
+      <div className="grid gap-3">
+        <label>Téléphone</label>
+        <input value={phone} onChange={(e) => setPhone(e.target.value)} className="p-2 bg-white/5 rounded-md" />
+        <label>Email</label>
+        <input value={email} onChange={(e) => setEmail(e.target.value)} className="p-2 bg-white/5 rounded-md" />
+        <label>WhatsApp / Telegram</label>
+        <input value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} className="p-2 bg-white/5 rounded-md" />
+
+        <div className="flex gap-3 mt-3">
+          <button onClick={save} className="px-4 py-2 bg-fuchsia-500 rounded-2xl">Sauvegarder</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatsPage({ beats }) {
+  // Statistiques simples mock : top beats par ventes (on stocke soldCount dans beat si présent)
+  const top = [...beats].sort((a,b) => (b.soldCount||0)-(a.soldCount||0)).slice(0,5);
+  const totalSales = beats.reduce((s,b) => s + (b.soldCount||0), 0);
+
+  return (
+    <div className="p-4">
+      <div className="font-bold text-xl mb-4">Statistiques</div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="p-4 rounded-2xl border border-white/8 bg-white/3">
+          <div className="font-semibold">Ventes totales</div>
+          <div className="text-3xl font-bold mt-3">{totalSales}</div>
+          <div className="text-sm text-white/60 mt-2">Nombre de ventes enregistrées (local)</div>
+        </div>
+
+        <div className="p-4 rounded-2xl border border-white/8 bg-white/3">
+          <div className="font-semibold">Top instrus</div>
+          <ul className="mt-3 space-y-2">
+            {top.map(b => (
+              <li key={b.id} className="flex items-center gap-3">
+                <img src={b.cover} className="h-10 w-10 object-cover rounded-md" />
+                <div className="flex-1">{b.title}</div>
+                <div className="text-sm text-white/60">{b.soldCount||0} ventes</div>
+              </li>
+            ))}
+            {top.length===0 && <li className="text-white/60">Aucune donnée</li>}
+          </ul>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ParamsPage({ settings, setSettings }) {
+  const [siteTitle, setSiteTitle] = useState(settings.siteTitle || 'Instru-Marion');
+  const [footer, setFooter] = useState(settings.footer || '© Instru-Marion');
+
+  const save = () => { const s={...settings, siteTitle, footer}; setSettings(s); saveSettings(s); alert('Paramètres sauvegardés (local)'); };
+
+  return (
+    <div className="p-4 max-w-xl">
+      <div className="font-bold text-xl mb-4">Paramètres</div>
+      <div className="grid gap-3">
+        <label>Titre du site</label>
+        <input value={siteTitle} onChange={(e)=>setSiteTitle(e.target.value)} className="p-2 bg-white/5 rounded-md" />
+
+        <label>Footer</label>
+        <input value={footer} onChange={(e)=>setFooter(e.target.value)} className="p-2 bg-white/5 rounded-md" />
+
+        <div className="flex gap-3 mt-3">
+          <button onClick={save} className="px-4 py-2 bg-fuchsia-500 rounded-2xl">Sauvegarder</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function AdminDashboard() {
+  const [page, setPage] = useState('catalogue');
+  const [collapsed, setCollapsed] = useState(false);
+  const [beats, setBeats] = useState(() => loadBeats());
+  const [settings, setSettings] = useState(() => loadSettings());
+  const [searchQuery, setSearchQuery] = useState('');
+
+  useEffect(() => { saveBeats(beats); }, [beats]);
+  useEffect(() => { saveSettings(settings); }, [settings]);
+
+  return (
+    <div className="min-h-screen bg-[radial-gradient(ellipse_at_top_left,rgba(99,102,241,0.08),transparent_40%),radial-gradient(ellipse_at_bottom_right,rgba(236,72,153,0.06),transparent_40%)] text-white">
+      <div className="max-w-7xl mx-auto grid grid-cols-[auto_1fr] min-h-screen">
+        <Sidebar page={page} setPage={setPage} collapsed={collapsed} setCollapsed={setCollapsed} />
+        <main className="flex flex-col">
+          <Topbar title={page === 'catalogue' ? 'Catalogue' : page === 'paiements' ? 'Paiements' : page === 'support' ? 'Support' : page === 'stats' ? 'Statistiques' : 'Paramètres'} onSearch={setSearchQuery} totalBeats={beats.length} />
+
+          <div className="flex-1 overflow-auto">
+            {page === 'catalogue' && <CataloguePage beats={beats} setBeats={setBeats} />}
+            {page === 'paiements' && <PaiementsPage settings={settings} setSettings={setSettings} />}
+            {page === 'support' && <SupportPage settings={settings} setSettings={setSettings} />}
+            {page === 'stats' && <StatsPage beats={beats} />}
+            {page === 'params' && <ParamsPage settings={settings} setSettings={setSettings} />}
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+}
